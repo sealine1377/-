@@ -11,11 +11,7 @@ export interface UserProfile {
   created_at: string;
 }
 
-interface AdminUsersTabProps {
-  currentUserId: string;
-}
-
-export default function AdminUsersTab({ currentUserId }: AdminUsersTabProps) {
+export default function AdminUsersTab() {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -38,7 +34,6 @@ export default function AdminUsersTab({ currentUserId }: AdminUsersTabProps) {
   };
 
   const handleToggleRole = async (targetUser: UserProfile) => {
-    // admin 계정 자신의 권한 해제 방지
     if (targetUser.username === 'admin') {
       alert("최초 관리자 'admin' 계정의 권한은 변경할 수 없습니다.");
       return;
