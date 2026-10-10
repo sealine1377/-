@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
+import AuthModal from '@/components/AuthModal';
 
 interface TagInfo {
   id: string;
@@ -23,16 +24,27 @@ interface QuestionItem {
   official_skills: string[];
 }
 
+interface UserProfile {
+  id: string;
+  username: string;
+  email: string;
+  role: 'admin' | 'user';
+}
+
 export default function HomePage() {
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [tier3Skills, setTier3Skills] = useState<TagInfo[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // 화면 테마 상태 ('light' | 'dark' | 'sepia')
+  // 테마 상태
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
 
-  // 권한 상태 (관리자 vs 일반유저)
-  const [isAdmin, setIsAdmin] = useState(false);
+  // 인증 및 프로필 상태
+  const [currentUserProfile, setCurrentUserProfile] = useState<UserProfile | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+
+  // 관리자 모드 토글 (실제 admin 계정일 때만 활성화 가능)
+  const [isAdminMode, setIsAdminMode] = useState(false);
 
   // 필터 상태
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -41,30 +53,47 @@ export default function HomePage() {
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([]);
 
   useEffect(() => {
-    // 테마 및 권한 로드
     const savedTheme = localStorage.getItem('reading_theme') as 'light' | 'dark' | 'sepia';
     if (savedTheme) setTheme(savedTheme);
 
-    const savedRole = localStorage.getItem('user_role');
-    if (savedRole === 'admin') setIsAdmin(true);
+    fetchAuthAndData();
 
-    fetchInitialData();
+    // Supabase 인증 상태 변화 구독
+    const { data: authListener } = supabase.auth.onAuthStateChange(() => {
+      fetchAuthAndData();
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
   }, []);
 
-  const handleThemeChange = (newTheme: 'light' | 'dark' | 'sepia') => {
-    setTheme(newTheme);
-    localStorage.setItem('reading_theme', newTheme);
-  };
-
-  const handleToggleAdminRole = () => {
-    const nextRole = !isAdmin;
-    setIsAdmin(nextRole);
-    localStorage.setItem('user_role', nextRole ? 'admin' : 'user');
-  };
-
-  const fetchInitialData = async () => {
+  const fetchAuthAndData = async () => {
     setLoading(true);
 
+    // 1. 로그인 유저 확인
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (profile) {
+        setCurrentUserProfile(profile as UserProfile);
+        // admin 권한이 없으면 관리자 모드 자동 해제
+        if (profile.role !== 'admin') {
+          setIsAdminMode(false);
+        }
+      }
+    } else {
+      setCurrentUserProfile(null);
+      setIsAdminMode(false);
+    }
+
+    // 2. 초기 데이터 로드
     const { data: tagData } = await supabase
       .from('tags')
       .select('*')
@@ -123,6 +152,17 @@ export default function HomePage() {
     setLoading(false);
   };
 
+  const handleThemeChange = (newTheme: 'light' | 'dark' | 'sepia') => {
+    setTheme(newTheme);
+    localStorage.setItem('reading_theme', newTheme);
+  };
+
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setCurrentUserProfile(null);
+    setIsAdminMode(false);
+  };
+
   const handleSkillToggle = (id: string) => {
     if (selectedSkillIds.includes(id)) {
       setSelectedSkillIds(selectedSkillIds.filter((item) => item !== id));
@@ -144,7 +184,9 @@ export default function HomePage() {
     return matchesKeyword && matchesExamType && matchesSubCategory && matchesSkills;
   });
 
-  // 테마별 스타일 매핑
+  const isRealAdmin = currentUserProfile?.role === 'admin';
+
+  // 테마 스타일 매핑
   const themeBgMap = {
     light: 'bg-gray-50 text-gray-900',
     dark: 'bg-gray-950 text-gray-100',
@@ -179,7 +221,6 @@ export default function HomePage() {
     <div className={`min-h-screen transition-colors ${themeBgMap[theme]}`}>
       {/* 상단 네비게이션 */}
       <header className={`px-8 py-4 flex items-center justify-between shadow-sm transition-colors ${headerBgMap[theme]}`}>
-        {/* 서비스 타이틀: 평가원 평가하기 (검정색, 굵은 폰트) */}
         <div className="flex items-center">
           <span className="text-2xl font-black text-black dark:text-white tracking-tight">
             평가원 평가하기
@@ -209,32 +250,57 @@ export default function HomePage() {
             </button>
           </div>
 
-          {/* 권한 모드 스위치 */}
-          <button
-            onClick={handleToggleAdminRole}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition border ${
-              isAdmin
-                ? 'bg-amber-100 border-amber-300 text-amber-900 shadow-sm'
-                : 'bg-black/5 border-black/10 text-gray-600 hover:bg-black/10'
-            }`}
-          >
-            {isAdmin ? '👑 관리자 모드' : '👤 유저 모드'}
-          </button>
+          {/* 로그인 / 사용자 프로필 표시 */}
+          {currentUserProfile ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold px-2.5 py-1 bg-black/5 dark:bg-white/10 rounded-lg">
+                👤 {currentUserProfile.username}님
+                {isRealAdmin && <span className="text-amber-600 font-extrabold ml-1">(👑 admin)</span>}
+              </span>
 
-          {/* 관리자 페이지 링크 */}
-          {isAdmin && (
-            <Link
-              href="/admin"
-              className="px-4 py-1.5 bg-gray-900 text-white text-xs font-bold rounded-lg hover:bg-gray-700 transition"
+              {/* 관리자(admin) 전용 모드 전환 버튼 */}
+              {isRealAdmin && (
+                <button
+                  onClick={() => setIsAdminMode(!isAdminMode)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition border ${
+                    isAdminMode
+                      ? 'bg-amber-100 border-amber-300 text-amber-900 shadow-sm'
+                      : 'bg-black/5 border-black/10 text-gray-600 hover:bg-black/10'
+                  }`}
+                >
+                  {isAdminMode ? '👑 관리자 모드 On' : '👤 유저 모드 On'}
+                </button>
+              )}
+
+              {/* 관리자 페이지 링크 (admin 권한 계정만 노출) */}
+              {isRealAdmin && (
+                <Link
+                  href="/admin"
+                  className="px-3.5 py-1.5 bg-gray-900 text-white text-xs font-bold rounded-lg hover:bg-gray-700 transition"
+                >
+                  ⚙️ 관리자
+                </Link>
+              )}
+
+              <button
+                onClick={handleSignOut}
+                className="px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs rounded-lg transition"
+              >
+                로그아웃
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setIsAuthModalOpen(true)}
+              className="px-4 py-2 bg-black text-white text-xs font-bold rounded-lg hover:bg-gray-800 transition"
             >
-              ⚙️ 관리자
-            </Link>
+              🔑 로그인 / 회원가입
+            </button>
           )}
         </div>
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-        {/* 필터 및 검색 패널 */}
         <div className={`p-6 rounded-xl border shadow-sm space-y-5 transition-colors ${panelBgMap[theme]}`}>
           <div className="flex flex-col md:flex-row gap-4 justify-between items-center">
             <input
@@ -301,7 +367,6 @@ export default function HomePage() {
           )}
         </div>
 
-        {/* 지문 카드 그리드 */}
         {loading ? (
           <div className="text-center py-20 opacity-60 font-medium">지문 불러오는 중...</div>
         ) : filteredQuestions.length === 0 ? (
@@ -349,6 +414,13 @@ export default function HomePage() {
           </div>
         )}
       </main>
+
+      {/* Auth 모달 */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onSuccess={fetchAuthAndData}
+      />
     </div>
   );
 }
