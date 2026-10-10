@@ -9,9 +9,12 @@ import AdminQuestionManageTab, { QuestionItem, SortOption } from '@/components/a
 import AdminBatchUploadTab from '@/components/admin/AdminBatchUploadTab';
 import AdminGlobalTagsTab, { Tag, ReviewItem } from '@/components/admin/AdminGlobalTagsTab';
 import AdminQuestionDetailModal from '@/components/admin/AdminQuestionDetailModal';
+import AdminUsersTab, { UserProfile } from '@/components/admin/AdminUsersTab';
 
 export default function AdminPage() {
   const [activeTab, setActiveTab] = useState<AdminTab>('manage');
+  const [currentProfile, setCurrentProfile] = useState<UserProfile | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
   // 지문 목록 & 검색/정렬 상태
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
@@ -26,8 +29,27 @@ export default function AdminPage() {
   const [topReviews, setTopReviews] = useState<ReviewItem[]>([]);
 
   useEffect(() => {
-    fetchAdminData();
+    checkAdminAuth();
   }, []);
+
+  const checkAdminAuth = async () => {
+    setAuthLoading(true);
+    const { data: { user } } = await supabase.auth.getUser();
+
+    if (user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (profile) {
+        setCurrentProfile(profile as UserProfile);
+      }
+    }
+    setAuthLoading(false);
+    fetchAdminData();
+  };
 
   const getExamMonthWeight = (examType: string): number => {
     if (!examType) return 0;
@@ -41,7 +63,6 @@ export default function AdminPage() {
   };
 
   const fetchAdminData = async () => {
-    // 1. 질문 및 별점 로드
     const { data: qData } = await supabase.from('questions').select('*');
     const { data: rData } = await supabase.from('ratings').select('question_id, score');
 
@@ -66,7 +87,6 @@ export default function AdminPage() {
       setQuestions(formatted);
     }
 
-    // 2. 3차 태그 로드
     const { data: tagData } = await supabase.from('tags').select('*').eq('tier', 3);
     if (tagData) {
       setTagsTier3(
@@ -78,7 +98,6 @@ export default function AdminPage() {
       );
     }
 
-    // 3. 인기 한줄평 로드
     const { data: revData } = await supabase
       .from('reviews')
       .select('*')
@@ -91,51 +110,59 @@ export default function AdminPage() {
     }
   };
 
-  // 개별 지문 삭제
   const handleDeleteQuestion = async (qId: string, qTitle: string) => {
-    if (!confirm(`'${qTitle}' 지문을 삭제하시겠습니까?\n모든 관련 별점 및 한줄평도 함께 삭제됩니다.`)) return;
-
+    if (!confirm(`'${qTitle}' 지문을 삭제하시겠습니까?`)) return;
     const { error } = await supabase.from('questions').delete().eq('id', qId);
-    if (error) {
-      alert(`삭제 실패: ${error.message}`);
-    } else {
+    if (!error) {
       alert('✅ 지문이 삭제되었습니다.');
       setSelectedManageQuestion(null);
       fetchAdminData();
     }
   };
 
-  // 글로벌 3차 태그 추가
   const handleAddTier3Tag = async (name: string) => {
     const { error } = await supabase.from('tags').insert([{ name, tag_name: name, tier: 3 }]);
-    if (error) {
-      alert(`태그 추가 실패: ${error.message}`);
-    } else {
-      fetchAdminData();
-    }
+    if (!error) fetchAdminData();
   };
 
-  // 한줄평 3차 태그 승격
   const handlePromoteReviewToTag = async (content: string) => {
     if (!confirm(`'${content}' 문구를 [3차 공식 독해 능력 태그]로 승격하시겠습니까?`)) return;
-
     const { error } = await supabase.from('tags').insert([{ name: content, tag_name: content, tier: 3 }]);
-    if (error) {
-      alert(`승격 실패: ${error.message}`);
-    } else {
+    if (!error) {
       alert('✅ 3차 공식 독해 능력 태그로 승격되었습니다.');
       fetchAdminData();
     }
   };
 
-  // 글로벌 태그 삭제
   const handleDeleteTag = async (id: string) => {
     if (!confirm('태그를 삭제하시겠습니까?')) return;
     await supabase.from('tags').delete().eq('id', id);
     fetchAdminData();
   };
 
-  // 지문 필터링 및 정렬
+  if (authLoading) {
+    return <div className="text-center py-20 font-bold text-gray-500">권한 확인 중...</div>;
+  }
+
+  // 관리자 권한 차단 화면
+  if (!currentProfile || currentProfile.role !== 'admin') {
+    return (
+      <div className="max-w-md mx-auto my-20 p-8 bg-white border border-red-200 rounded-2xl text-center space-y-4 shadow-xl">
+        <div className="text-4xl">🔒</div>
+        <h2 className="text-lg font-black text-red-600">접근 권한이 없습니다</h2>
+        <p className="text-xs text-gray-600 leading-relaxed">
+          관리자 페이지는 <b>관리자(admin) 계정</b>으로 로그인한 사용자만 접근할 수 있습니다.
+        </p>
+        <Link
+          href="/"
+          className="inline-block px-5 py-2.5 bg-black text-white font-bold text-xs rounded-xl hover:bg-gray-800 transition"
+        >
+          메인 페이지로 돌아가기
+        </Link>
+      </div>
+    );
+  }
+
   const filteredAndSortedQuestions = questions
     .filter((q) => q.title.toLowerCase().includes(searchQuery.toLowerCase()))
     .sort((a, b) => {
@@ -156,11 +183,12 @@ export default function AdminPage() {
 
   return (
     <div className="max-w-5xl mx-auto p-8 space-y-8">
-      {/* 상단 네비게이션 헤더 */}
       <div className="flex justify-between items-center border-b pb-4">
         <div>
           <h1 className="text-2xl font-black text-gray-900">⚙️ 평가원 평가하기 관리자 시스템</h1>
-          <p className="text-xs text-gray-500 mt-1">지문 다중 업로드, 목록 관리 및 태그/한줄평 종합 관리</p>
+          <p className="text-xs text-gray-500 mt-1">
+            접속 계정: <b>{currentProfile.username}</b> ({currentProfile.email})
+          </p>
         </div>
         <Link
           href="/"
@@ -170,10 +198,8 @@ export default function AdminPage() {
         </Link>
       </div>
 
-      {/* 탭 북마크 바 */}
       <AdminTabNav activeTab={activeTab} onTabChange={setActiveTab} questionCount={questions.length} />
 
-      {/* 탭 1: 지문 관리 */}
       {activeTab === 'manage' && (
         <AdminQuestionManageTab
           questions={filteredAndSortedQuestions}
@@ -185,10 +211,8 @@ export default function AdminPage() {
         />
       )}
 
-      {/* 탭 2: 다중 일괄 업로드 */}
       {activeTab === 'upload' && <AdminBatchUploadTab onSuccess={fetchAdminData} />}
 
-      {/* 탭 3: 글로벌 태그 & 한줄평 승격 */}
       {activeTab === 'tags' && (
         <AdminGlobalTagsTab
           tagsTier3={tagsTier3}
@@ -199,7 +223,8 @@ export default function AdminPage() {
         />
       )}
 
-      {/* 개별 지문 통합 관리 모달 */}
+      {activeTab === 'users' && <AdminUsersTab currentUserId={currentProfile.id} />}
+
       {selectedManageQuestion && (
         <AdminQuestionDetailModal
           question={selectedManageQuestion}
