@@ -16,15 +16,12 @@ export default function AdminPage() {
   const [currentProfile, setCurrentProfile] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
-  // 지문 목록 & 검색/정렬 상태
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [sortOption, setSortOption] = useState<SortOption>('year_desc');
 
-  // 개별 지문 모달 상태
   const [selectedManageQuestion, setSelectedManageQuestion] = useState<QuestionItem | null>(null);
 
-  // 글로벌 태그 및 리뷰 상태
   const [tagsTier3, setTagsTier3] = useState<Tag[]>([]);
   const [topReviews, setTopReviews] = useState<ReviewItem[]>([]);
 
@@ -144,7 +141,6 @@ export default function AdminPage() {
     return <div className="text-center py-20 font-bold text-gray-500">권한 확인 중...</div>;
   }
 
-  // 관리자 권한 차단 화면
   if (!currentProfile || currentProfile.role !== 'admin') {
     return (
       <div className="max-w-md mx-auto my-20 p-8 bg-white border border-red-200 rounded-2xl text-center space-y-4 shadow-xl">
@@ -223,7 +219,7 @@ export default function AdminPage() {
         />
       )}
 
-      {activeTab === 'users' && <AdminUsersTab currentUserId={currentProfile.id} />}
+      {activeTab === 'users' && <AdminUsersTab />}
 
       {selectedManageQuestion && (
         <AdminQuestionDetailModal
