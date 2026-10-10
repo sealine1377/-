@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
 import AuthModal from '@/components/AuthModal';
@@ -52,8 +52,7 @@ interface UserProfile {
 
 export default function PassageDetailPage() {
   const params = useParams();
-  const router = useRouter();
-  const passageId = params.id as string;
+  const passageId = (params?.id as string) || '';
 
   // 데이터 상태
   const [question, setQuestion] = useState<QuestionDetail | null>(null);
@@ -83,11 +82,13 @@ export default function PassageDetailPage() {
     const savedTheme = localStorage.getItem('reading_theme') as 'light' | 'dark' | 'sepia';
     if (savedTheme) setTheme(savedTheme);
 
-    fetchAuthAndData();
+    if (passageId) {
+      fetchAuthAndData();
+    }
 
     // Supabase 인증 상태 변화 감지
     const { data: authListener } = supabase.auth.onAuthStateChange(() => {
-      fetchAuthAndData();
+      if (passageId) fetchAuthAndData();
     });
 
     return () => {
@@ -100,7 +101,6 @@ export default function PassageDetailPage() {
 
     // 1. 현재 사용자 로그인 정보 확인
     const { data: { user } } = await supabase.auth.getUser();
-    let profileData: UserProfile | null = null;
 
     if (user) {
       const { data: profile } = await supabase
@@ -110,8 +110,7 @@ export default function PassageDetailPage() {
         .single();
 
       if (profile) {
-        profileData = profile as UserProfile;
-        setCurrentUserProfile(profileData);
+        setCurrentUserProfile(profile as UserProfile);
       }
     } else {
       setCurrentUserProfile(null);
@@ -137,7 +136,7 @@ export default function PassageDetailPage() {
       .eq('question_id', passageId);
 
     if (rData && rData.length > 0) {
-      const total = rData.reduce((acc, cur) => acc + cur.score, 0);
+      const total = rData.reduce((acc: number, cur: { score: number }) => acc + cur.score, 0);
       setAvgRating(Number((total / rData.length).toFixed(1)));
       setRatingCount(rData.length);
 
@@ -178,7 +177,7 @@ export default function PassageDetailPage() {
       setOfficialSkills([]);
     }
 
-    // 5. 연계 추천 지문 로드 (동일한 3차 독해 능력을 공유하는 지문)
+    // 5. 연계 추천 지문 로드
     if (tagIds.length > 0) {
       const { data: sharedMapData } = await supabase
         .from('question_official_tags')
@@ -246,7 +245,6 @@ export default function PassageDetailPage() {
     setCurrentUserProfile(null);
   };
 
-  // 로그인 필수 검증 함수
   const requireAuth = (): boolean => {
     if (!currentUserProfile) {
       alert('🔒 로그인 후 이용 가능한 기능입니다.');
@@ -256,7 +254,6 @@ export default function PassageDetailPage() {
     return true;
   };
 
-  // 별점 남기기
   const handleRatingSubmit = async (score: number) => {
     if (!requireAuth()) return;
 
@@ -283,7 +280,6 @@ export default function PassageDetailPage() {
     }
   };
 
-  // 한줄평 작성 제출
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!requireAuth()) return;
@@ -316,7 +312,6 @@ export default function PassageDetailPage() {
     }
   };
 
-  // 한줄평 공감 (좋아요 / 싫어요)
   const handleReviewReaction = async (reviewId: string, type: 'like' | 'dislike') => {
     if (!requireAuth()) return;
 
@@ -345,7 +340,6 @@ export default function PassageDetailPage() {
 
   const isRealAdmin = currentUserProfile?.role === 'admin';
 
-  // 테마 매핑
   const themeBgMap = {
     light: 'bg-gray-100 text-gray-900',
     dark: 'bg-gray-950 text-gray-100',
@@ -464,9 +458,8 @@ export default function PassageDetailPage() {
         </div>
       </header>
 
-      {/* 메인 콘텐츠 메인 뷰어 & 서랍형 분석 패널 */}
+      {/* 메인 콘텐츠 */}
       <div className="flex-1 flex relative overflow-hidden h-[calc(100vh-57px)]">
-        {/* PDF 원본 지문 뷰어 */}
         <div className="flex-1 h-full bg-gray-200 dark:bg-gray-900 relative">
           {question.pdf_url ? (
             <iframe
@@ -481,7 +474,6 @@ export default function PassageDetailPage() {
           )}
         </div>
 
-        {/* 우측 서랍형 분석 패널 토글 버튼 */}
         <button
           onClick={() => setIsPanelOpen(!isPanelOpen)}
           className={`absolute right-0 top-1/2 -translate-y-1/2 z-30 px-2 py-4 bg-gray-900 text-white text-xs font-bold rounded-l-xl shadow-2xl transition-all duration-300 hover:bg-black ${
@@ -492,13 +484,11 @@ export default function PassageDetailPage() {
           {isPanelOpen ? '▶' : '◀ 분석 패널'}
         </button>
 
-        {/* 우측 분석 패널 */}
         <div
           className={`w-[380px] h-full overflow-y-auto p-6 space-y-6 shadow-xl transition-all duration-300 z-20 ${
             panelBgMap[theme]
           } ${isPanelOpen ? 'translate-x-0' : 'translate-x-full absolute right-0'}`}
         >
-          {/* 패널 타이틀 & PDF 다운로드 */}
           <div className="border-b border-black/10 dark:border-white/10 pb-4 space-y-3">
             <div className="flex justify-between items-center">
               <h3 className="text-sm font-black tracking-tight">📊 지문 분석 & 한줄평 피드</h3>
@@ -519,7 +509,6 @@ export default function PassageDetailPage() {
             </p>
           </div>
 
-          {/* 3차 공식 독해 능력 배지 */}
           <div className="space-y-2">
             <h4 className="text-xs font-bold opacity-80">🧠 3차 공식 독해 능력 (불변 핵심 태그)</h4>
             <div className="flex flex-wrap gap-1.5">
@@ -538,7 +527,6 @@ export default function PassageDetailPage() {
             </div>
           </div>
 
-          {/* ⭐ 별점 평가 섹션 (로그인 시에만 작동) */}
           <div className={`p-4 rounded-xl border space-y-3 ${boxBgMap[theme]}`}>
             <div className="flex justify-between items-center">
               <span className="text-xs font-bold">⭐ 지문 체감 난이도 평가</span>
@@ -566,7 +554,6 @@ export default function PassageDetailPage() {
             )}
           </div>
 
-          {/* 🔗 3차 태그 연계 추천 지문 모듈 */}
           <div className="space-y-3">
             <h4 className="text-xs font-bold opacity-80">🔗 동일 독해 능력 연계 추천 지문</h4>
             {linkedQuestions.length === 0 ? (
@@ -601,11 +588,9 @@ export default function PassageDetailPage() {
             )}
           </div>
 
-          {/* 💬 4차 유저 한줄평 & 칭호 인증 피드 */}
           <div className="space-y-4 pt-2 border-t border-black/10 dark:border-white/10">
             <h4 className="text-xs font-bold opacity-80">💬 유저 체감 한줄평 & 공감 피드 ({reviews.length})</h4>
 
-            {/* 한줄평 작성 폼 */}
             <form onSubmit={handleReviewSubmit} className="space-y-2">
               <select
                 value={newUserTitle}
@@ -642,7 +627,6 @@ export default function PassageDetailPage() {
               </div>
             </form>
 
-            {/* 한줄평 목록 */}
             <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
               {reviews.length === 0 ? (
                 <p className="text-xs text-gray-400 py-2">가장 먼저 한줄평을 작성해 보세요!</p>
@@ -675,7 +659,6 @@ export default function PassageDetailPage() {
         </div>
       </div>
 
-      {/* 로그인/회원가입 모달 */}
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
