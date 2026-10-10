@@ -1,103 +1,239 @@
 'use client';
 
-import { useEffect, useState, Suspense } from 'react';
-import { useParams } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import Link from 'next/link';
+import AuthModal from '@/components/AuthModal';
 
-import PassageHeader from '@/components/PassageHeader';
-import PdfViewer from '@/components/PdfViewer';
-import RatingSection from '@/components/RatingSection';
-import TagSection, { OfficialTag, ReviewItem } from '@/components/TagSection';
-import AdminTagEditModal from '@/components/AdminTagEditModal';
-
-interface Question {
+interface QuestionDetail {
   id: string;
   title: string;
   year: number;
   exam_type: string;
   category: string;
   sub_category: string;
-  passage_text?: string;
   pdf_url: string;
+  created_at: string;
 }
 
-interface RelatedQuestion {
+interface TagItem {
+  id: string;
+  name: string;
+  tier: number;
+}
+
+interface ReviewItem {
+  id: string;
+  question_id: string;
+  content: string;
+  user_title: string;
+  likes_count: number;
+  dislikes_count: number;
+  created_at: string;
+  user_id?: string;
+}
+
+interface LinkedQuestion {
   id: string;
   title: string;
   year: number;
   exam_type: string;
   sub_category: string;
-  shared_tags: string[];
+  shared_skills: string[];
 }
 
-function PassageContent() {
-  const params = useParams();
-  const passageId = params?.id as string;
+interface UserProfile {
+  id: string;
+  username: string;
+  email: string;
+  role: 'admin' | 'user';
+}
 
-  const [question, setQuestion] = useState<Question | null>(null);
+export default function PassageDetailPage() {
+  const params = useParams();
+  const router = useRouter();
+  const passageId = params.id as string;
+
+  // 데이터 상태
+  const [question, setQuestion] = useState<QuestionDetail | null>(null);
+  const [officialSkills, setOfficialSkills] = useState<TagItem[]>([]);
+  const [linkedQuestions, setLinkedQuestions] = useState<LinkedQuestion[]>([]);
+  const [reviews, setReviews] = useState<ReviewItem[]>([]);
+  const [avgRating, setAvgRating] = useState<number>(0);
+  const [ratingCount, setRatingCount] = useState<number>(0);
+  const [myRating, setMyRating] = useState<number>(0);
   const [loading, setLoading] = useState(true);
 
-  // 우측 분석 패널 열림/닫힘 상태
+  // 패널 서랍 토글 상태
   const [isPanelOpen, setIsPanelOpen] = useState(true);
 
-  // 권한 상태
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [isAdminModalOpen, setIsAdminModalOpen] = useState(false);
-
-  // 화면 테마
+  // 테마 상태
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
 
-  // 별점 상태
-  const [avgRating, setAvgRating] = useState<number>(0);
-  const [userRating, setUserRating] = useState<number>(0);
-  const [ratingCount, setRatingCount] = useState<number>(0);
-  const [hasRated, setHasRated] = useState<boolean>(false);
+  // 인증 및 프로필 상태
+  const [currentUserProfile, setCurrentUserProfile] = useState<UserProfile | null>(null);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
 
-  // 3차 공식 태그 & 4차 한줄평 데이터
-  const [officialTags, setOfficialTags] = useState<OfficialTag[]>([]);
-  const [attachedSkillIds, setAttachedSkillIds] = useState<string[]>([]);
-  const [reviews, setReviews] = useState<ReviewItem[]>([]);
-  const [votedReviewIds, setVotedReviewIds] = useState<Record<string, 'like' | 'dislike'>>({});
-
-  // 3차 능력 기반 연계 추천 지문 목록
-  const [relatedQuestions, setRelatedQuestions] = useState<RelatedQuestion[]>([]);
+  // 신규 한줄평 작성 폼 상태
+  const [newReviewContent, setNewReviewContent] = useState('');
+  const [newUserTitle, setNewUserTitle] = useState('칭호: 불꽃 독해자');
 
   useEffect(() => {
-    if (!passageId) return;
-
-    checkAuthRole();
-
     const savedTheme = localStorage.getItem('reading_theme') as 'light' | 'dark' | 'sepia';
     if (savedTheme) setTheme(savedTheme);
 
-    const savedRating = localStorage.getItem(`rating_${passageId}`);
-    if (savedRating) {
-      setUserRating(Number(savedRating));
-      setHasRated(true);
+    fetchAuthAndData();
+
+    // Supabase 인증 상태 변화 감지
+    const { data: authListener } = supabase.auth.onAuthStateChange(() => {
+      fetchAuthAndData();
+    });
+
+    return () => {
+      authListener.subscription.unsubscribe();
+    };
+  }, [passageId]);
+
+  const fetchAuthAndData = async () => {
+    setLoading(true);
+
+    // 1. 현재 사용자 로그인 정보 확인
+    const { data: { user } } = await supabase.auth.getUser();
+    let profileData: UserProfile | null = null;
+
+    if (user) {
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (profile) {
+        profileData = profile as UserProfile;
+        setCurrentUserProfile(profileData);
+      }
+    } else {
+      setCurrentUserProfile(null);
     }
 
-    const savedVotes = localStorage.getItem(`voted_reviews_${passageId}`);
-    if (savedVotes) {
-      try {
-        setVotedReviewIds(JSON.parse(savedVotes));
-      } catch (e) {
-        console.error(e);
+    // 2. 지문 기본 메타데이터 로드
+    const { data: qData, error: qError } = await supabase
+      .from('questions')
+      .select('*')
+      .eq('id', passageId)
+      .single();
+
+    if (qError || !qData) {
+      setLoading(false);
+      return;
+    }
+    setQuestion(qData);
+
+    // 3. 지문 별점 정보 및 내 별점 로드
+    const { data: rData } = await supabase
+      .from('ratings')
+      .select('*')
+      .eq('question_id', passageId);
+
+    if (rData && rData.length > 0) {
+      const total = rData.reduce((acc, cur) => acc + cur.score, 0);
+      setAvgRating(Number((total / rData.length).toFixed(1)));
+      setRatingCount(rData.length);
+
+      if (user) {
+        const mine = rData.find((r) => r.user_id === user.id);
+        if (mine) setMyRating(mine.score);
+      }
+    } else {
+      setAvgRating(0);
+      setRatingCount(0);
+      setMyRating(0);
+    }
+
+    // 4. 3차 공식 독해 능력 태그 로드
+    const { data: tagMapData } = await supabase
+      .from('question_official_tags')
+      .select('tag_id')
+      .eq('question_id', passageId);
+
+    const tagIds = tagMapData?.map((t) => t.tag_id) || [];
+    let skills: TagItem[] = [];
+
+    if (tagIds.length > 0) {
+      const { data: skillTags } = await supabase
+        .from('tags')
+        .select('*')
+        .in('id', tagIds);
+
+      if (skillTags) {
+        skills = skillTags.map((t) => ({
+          id: t.id,
+          name: t.tag_name || t.name || '',
+          tier: 3,
+        }));
+        setOfficialSkills(skills);
+      }
+    } else {
+      setOfficialSkills([]);
+    }
+
+    // 5. 연계 추천 지문 로드 (동일한 3차 독해 능력을 공유하는 지문)
+    if (tagIds.length > 0) {
+      const { data: sharedMapData } = await supabase
+        .from('question_official_tags')
+        .select('question_id, tag_id')
+        .in('tag_id', tagIds)
+        .neq('question_id', passageId);
+
+      if (sharedMapData && sharedMapData.length > 0) {
+        const sharedQIds = Array.from(new Set(sharedMapData.map((s) => s.question_id)));
+
+        const { data: linkedQData } = await supabase
+          .from('questions')
+          .select('*')
+          .in('id', sharedQIds)
+          .limit(5);
+
+        if (linkedQData) {
+          const linkedList: LinkedQuestion[] = linkedQData.map((lq) => {
+            const sharedTagIds = sharedMapData
+              .filter((sm) => sm.question_id === lq.id)
+              .map((sm) => sm.tag_id);
+
+            const sharedNames = skills
+              .filter((sk) => sharedTagIds.includes(sk.id))
+              .map((sk) => sk.name);
+
+            return {
+              id: lq.id,
+              title: lq.title,
+              year: lq.year,
+              exam_type: lq.exam_type,
+              sub_category: lq.sub_category,
+              shared_skills: sharedNames,
+            };
+          });
+
+          setLinkedQuestions(linkedList);
+        }
+      } else {
+        setLinkedQuestions([]);
       }
     }
 
-    fetchQuestionData(true);
-  }, [passageId]);
+    // 6. 4차 유저 한줄평 및 공감 피드 로드
+    const { data: revData } = await supabase
+      .from('reviews')
+      .select('*')
+      .eq('question_id', passageId)
+      .order('likes_count', { ascending: false });
 
-  const checkAuthRole = () => {
-    const savedRole = localStorage.getItem('user_role');
-    setIsAdmin(savedRole === 'admin');
-  };
+    if (revData) {
+      setReviews(revData);
+    }
 
-  const handleToggleAdminRole = () => {
-    const nextRole = !isAdmin;
-    setIsAdmin(nextRole);
-    localStorage.setItem('user_role', nextRole ? 'admin' : 'user');
+    setLoading(false);
   };
 
   const handleThemeChange = (newTheme: 'light' | 'dark' | 'sepia') => {
@@ -105,372 +241,446 @@ function PassageContent() {
     localStorage.setItem('reading_theme', newTheme);
   };
 
-  const fetchQuestionData = async (isInitial = false) => {
-    if (isInitial) setLoading(true);
-
-    const { data: qData } = await supabase
-      .from('questions')
-      .select('*')
-      .eq('id', passageId)
-      .single();
-
-    if (qData) setQuestion(qData);
-
-    const { data: rData } = await supabase
-      .from('ratings')
-      .select('score')
-      .eq('question_id', passageId);
-
-    if (rData && rData.length > 0) {
-      const total = rData.reduce((acc, cur) => acc + cur.score, 0);
-      setAvgRating(Number((total / rData.length).toFixed(1)));
-      setRatingCount(rData.length);
-    }
-
-    const { data: officialSkillData } = await supabase
-      .from('question_official_tags')
-      .select('tag_id')
-      .eq('question_id', passageId);
-
-    const officialIds = officialSkillData?.map((s) => s.tag_id) || [];
-    setAttachedSkillIds(officialIds);
-
-    let currentOfficialTagList: OfficialTag[] = [];
-
-    if (officialIds.length > 0) {
-      const { data: tagData } = await supabase
-        .from('tags')
-        .select('*')
-        .in('id', officialIds);
-
-      if (tagData) {
-        currentOfficialTagList = tagData.map((t) => ({ id: t.id, name: t.tag_name || t.name || '' }));
-        setOfficialTags(currentOfficialTagList);
-      }
-
-      const { data: relatedTagMappings } = await supabase
-        .from('question_official_tags')
-        .select('question_id, tag_id')
-        .in('tag_id', officialIds)
-        .neq('question_id', passageId);
-
-      if (relatedTagMappings && relatedTagMappings.length > 0) {
-        const qToSharedTagIds: Record<string, string[]> = {};
-        relatedTagMappings.forEach((m) => {
-          if (!qToSharedTagIds[m.question_id]) {
-            qToSharedTagIds[m.question_id] = [];
-          }
-          if (!qToSharedTagIds[m.question_id].includes(m.tag_id)) {
-            qToSharedTagIds[m.question_id].push(m.tag_id);
-          }
-        });
-
-        const uniqueQIds = Object.keys(qToSharedTagIds).slice(0, 3);
-
-        const { data: relatedQData } = await supabase
-          .from('questions')
-          .select('id, title, year, exam_type, sub_category')
-          .in('id', uniqueQIds);
-
-        const tagMap = new Map(currentOfficialTagList.map((t) => [t.id, t.name]));
-
-        if (relatedQData) {
-          const formattedRelated: RelatedQuestion[] = relatedQData.map((rq) => {
-            const sharedNames = (qToSharedTagIds[rq.id] || [])
-              .map((tId) => tagMap.get(tId))
-              .filter((name): name is string => Boolean(name));
-
-            return {
-              ...rq,
-              shared_tags: sharedNames,
-            };
-          });
-
-          setRelatedQuestions(formattedRelated);
-        }
-      } else {
-        setRelatedQuestions([]);
-      }
-    } else {
-      setOfficialTags([]);
-      setRelatedQuestions([]);
-    }
-
-    const { data: reviewData } = await supabase
-      .from('reviews')
-      .select('*')
-      .eq('question_id', passageId)
-      .order('likes_count', { ascending: false });
-
-    if (reviewData) {
-      setReviews(reviewData);
-    }
-
-    if (isInitial) setLoading(false);
+  const handleSignOut = async () => {
+    await supabase.auth.signOut();
+    setCurrentUserProfile(null);
   };
 
-  const handleRate = async (score: number) => {
-    const savedRatingId = localStorage.getItem(`rating_id_${passageId}`);
-
-    if (hasRated) {
-      if (userRating === score) return;
-
-      const oldScore = userRating;
-      const oldTotal = avgRating * ratingCount;
-      const newTotal = oldTotal - oldScore + score;
-      const newAvg = Number((newTotal / ratingCount).toFixed(1));
-
-      setUserRating(score);
-      setAvgRating(newAvg);
-      localStorage.setItem(`rating_${passageId}`, score.toString());
-
-      if (savedRatingId) {
-        await supabase.from('ratings').update({ score }).eq('id', savedRatingId);
-      } else {
-        const { data } = await supabase
-          .from('ratings')
-          .insert([{ question_id: passageId, score }])
-          .select('id')
-          .single();
-        if (data?.id) localStorage.setItem(`rating_id_${passageId}`, data.id);
-      }
-    } else {
-      const newCount = ratingCount + 1;
-      const newTotal = avgRating * ratingCount + score;
-      const newAvg = Number((newTotal / newCount).toFixed(1));
-
-      setUserRating(score);
-      setHasRated(true);
-      setRatingCount(newCount);
-      setAvgRating(newAvg);
-      localStorage.setItem(`rating_${passageId}`, score.toString());
-
-      const { data } = await supabase
-        .from('ratings')
-        .insert([{ question_id: passageId, score }])
-        .select('id')
-        .single();
-
-      if (data?.id) {
-        localStorage.setItem(`rating_id_${passageId}`, data.id);
-      }
+  // 로그인 필수 검증 함수
+  const requireAuth = (): boolean => {
+    if (!currentUserProfile) {
+      alert('🔒 로그인 후 이용 가능한 기능입니다.');
+      setIsAuthModalOpen(true);
+      return false;
     }
+    return true;
   };
 
-  const handleVoteReview = async (reviewId: string, type: 'like' | 'dislike') => {
-    const currentVote = votedReviewIds[reviewId];
-    if (currentVote === type) return;
+  // 별점 남기기
+  const handleRatingSubmit = async (score: number) => {
+    if (!requireAuth()) return;
 
-    const targetReview = reviews.find((r) => r.id === reviewId);
-    if (!targetReview) return;
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
 
-    let newLikes = targetReview.likes_count;
-    let newDislikes = targetReview.dislikes_count;
-
-    if (type === 'like') {
-      newLikes += 1;
-      if (currentVote === 'dislike') newDislikes = Math.max(0, newDislikes - 1);
-    } else {
-      newDislikes += 1;
-      if (currentVote === 'like') newLikes = Math.max(0, newLikes - 1);
-    }
-
-    setReviews((prev) =>
-      prev.map((r) =>
-        r.id === reviewId
-          ? { ...r, likes_count: newLikes, dislikes_count: newDislikes }
-          : r
-      )
+    const { error } = await supabase.from('ratings').upsert(
+      [
+        {
+          question_id: passageId,
+          user_id: user.id,
+          score,
+        },
+      ],
+      { onConflict: 'question_id,user_id' }
     );
 
-    const updatedMap = { ...votedReviewIds, [reviewId]: type };
-    setVotedReviewIds(updatedMap);
-    localStorage.setItem(`voted_reviews_${passageId}`, JSON.stringify(updatedMap));
-
-    await supabase
-      .from('reviews')
-      .update({ likes_count: newLikes, dislikes_count: newDislikes })
-      .eq('id', reviewId);
+    if (error) {
+      alert(`별점 등록 실패: ${error.message}`);
+    } else {
+      setMyRating(score);
+      alert('⭐ 별점 평가가 제출되었습니다!');
+      fetchAuthAndData();
+    }
   };
 
-  const handleAddReview = async (content: string, userTitle: string, isVerified: boolean) => {
+  // 한줄평 작성 제출
+  const handleReviewSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!requireAuth()) return;
+
+    if (!newReviewContent.trim()) {
+      alert('한줄평 내용을 입력해 주세요.');
+      return;
+    }
+
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
+
     const { error } = await supabase.from('reviews').insert([
       {
         question_id: passageId,
-        content,
-        user_title: userTitle,
-        is_verified: isVerified,
+        user_id: user.id,
+        content: newReviewContent.trim(),
+        user_title: newUserTitle,
+        likes_count: 0,
+        dislikes_count: 0,
       },
     ]);
 
     if (error) {
-      alert(`한줄평 등록 실패: ${error.message}`);
+      alert(`한줄평 작성 실패: ${error.message}`);
     } else {
-      fetchQuestionData();
+      setNewReviewContent('');
+      alert('💬 유저 한줄평이 추가되었습니다!');
+      fetchAuthAndData();
     }
   };
 
-  const panelThemeMap = {
-    light: 'bg-white text-gray-900 border-l border-gray-200',
-    dark: 'bg-gray-900 text-gray-100 border-l border-gray-800',
-    sepia: 'bg-[#f4ecd8] text-[#433422] border-l border-[#e2d5b8]',
+  // 한줄평 공감 (좋아요 / 싫어요)
+  const handleReviewReaction = async (reviewId: string, type: 'like' | 'dislike') => {
+    if (!requireAuth()) return;
+
+    const target = reviews.find((r) => r.id === reviewId);
+    if (!target) return;
+
+    const newLikes = type === 'like' ? target.likes_count + 1 : target.likes_count;
+    const newDislikes = type === 'dislike' ? target.dislikes_count + 1 : target.dislikes_count;
+
+    const { error } = await supabase
+      .from('reviews')
+      .update({
+        likes_count: newLikes,
+        dislikes_count: newDislikes,
+      })
+      .eq('id', reviewId);
+
+    if (!error) {
+      setReviews((prev) =>
+        prev.map((r) =>
+          r.id === reviewId ? { ...r, likes_count: newLikes, dislikes_count: newDislikes } : r
+        )
+      );
+    }
   };
 
-  const tabThemeMap = {
-    light: 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100 shadow-md',
-    dark: 'bg-gray-900 text-gray-200 border-gray-700 hover:bg-gray-800 shadow-md',
-    sepia: 'bg-[#f4ecd8] text-[#433422] border-[#e2d5b8] hover:bg-[#eae0ca] shadow-md',
+  const isRealAdmin = currentUserProfile?.role === 'admin';
+
+  // 테마 매핑
+  const themeBgMap = {
+    light: 'bg-gray-100 text-gray-900',
+    dark: 'bg-gray-950 text-gray-100',
+    sepia: 'bg-[#f4ecd8] text-[#433422]',
   };
 
-  if (loading) return <div className="p-8 text-center text-gray-500">데이터를 불러오는 중...</div>;
-  if (!question) return <div className="p-8 text-center text-red-500">지문을 찾을 수 없습니다.</div>;
+  const headerBgMap = {
+    light: 'bg-white border-b border-gray-200 text-gray-800',
+    dark: 'bg-gray-900 border-b border-gray-800 text-gray-100',
+    sepia: 'bg-[#e8decb] border-b border-[#e0d3b6] text-[#433422]',
+  };
+
+  const panelBgMap = {
+    light: 'bg-white border-l border-gray-200 text-gray-900',
+    dark: 'bg-gray-900 border-l border-gray-800 text-gray-100',
+    sepia: 'bg-[#e8decb] border-l border-[#e0d3b6] text-[#433422]',
+  };
+
+  const boxBgMap = {
+    light: 'bg-gray-50 border-gray-200',
+    dark: 'bg-gray-800/50 border-gray-700',
+    sepia: 'bg-[#f4ecd8] border-[#d8ccb0]',
+  };
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center font-bold text-gray-500">
+        지문 데이터를 불러오는 중...
+      </div>
+    );
+  }
+
+  if (!question) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center space-y-4">
+        <p className="font-bold text-gray-600">존재하지 않거나 삭제된 지문입니다.</p>
+        <Link href="/" className="px-4 py-2 bg-black text-white rounded-lg text-xs font-bold">
+          메인으로 돌아가기
+        </Link>
+      </div>
+    );
+  }
 
   return (
-    <div className="w-screen h-screen flex flex-col overflow-hidden">
-      <PassageHeader
-        title={question.title}
-        pdfUrl={question.pdf_url}
-        theme={theme}
-        isAdmin={isAdmin}
-        onThemeChange={handleThemeChange}
-        onToggleAdmin={handleToggleAdminRole}
-        onOpenAdminEditModal={() => setIsAdminModalOpen(true)}
-      />
-
-      {/* 메인 뷰 컨테이너 */}
-      <div className="flex-1 flex overflow-hidden min-h-0 relative">
-        {/* PDF 뷰어 영역 (패널이 닫히면 전체 너비 차지) */}
-        <div className="flex-1 h-full min-h-0 w-full overflow-hidden relative">
-          <PdfViewer pdfUrl={question.pdf_url} theme={theme} />
+    <div className={`min-h-screen flex flex-col transition-colors ${themeBgMap[theme]}`}>
+      {/* 상단 네비게이션 헤더 */}
+      <header className={`px-6 py-3 flex items-center justify-between shadow-sm transition-colors z-20 ${headerBgMap[theme]}`}>
+        <div className="flex items-center gap-4">
+          <Link
+            href="/"
+            className="text-xs font-bold px-2.5 py-1.5 bg-black/5 dark:bg-white/10 rounded-lg hover:bg-black/10 transition"
+          >
+            ← 메인 목록
+          </Link>
+          <span className="text-lg font-black tracking-tight">{question.title}</span>
+          <span className="text-xs font-bold text-blue-600 bg-blue-50 dark:bg-blue-900/40 px-2 py-0.5 rounded">
+            {question.exam_type} ({question.year}학년도)
+          </span>
         </div>
 
-        {/* 우측 분석 패널 래퍼 (절대 짤리지 않는 서랍형 탭) */}
-        <div className="relative h-full flex shrink-0 z-20">
-          {/* 서랍 손잡이 탭 버튼: 동일한 top-6 위치에서 왼쪽으로 톡 튀어나옴 */}
-          <button
-            onClick={() => setIsPanelOpen((prev) => !prev)}
-            title={isPanelOpen ? '분석 패널 접기' : '분석 패널 펼치기'}
-            className={`absolute -left-9 top-6 z-30 flex items-center justify-center w-9 h-11 border border-r-0 rounded-l-xl transition-all cursor-pointer ${tabThemeMap[theme]}`}
-          >
-            <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
-              <line x1="15" y1="3" x2="15" y2="21" />
-            </svg>
-          </button>
+        <div className="flex items-center gap-3">
+          {/* 테마 스위치 */}
+          <div className="flex items-center gap-1 bg-black/5 dark:bg-white/10 p-1 rounded-lg text-xs font-semibold">
+            <button
+              onClick={() => handleThemeChange('light')}
+              className={`px-2.5 py-1 rounded transition ${theme === 'light' ? 'bg-white text-black shadow-sm font-bold' : 'opacity-60'}`}
+            >
+              ☀️ 라이트
+            </button>
+            <button
+              onClick={() => handleThemeChange('sepia')}
+              className={`px-2.5 py-1 rounded transition ${theme === 'sepia' ? 'bg-[#f4ecd8] text-[#433422] shadow-sm font-bold' : 'opacity-60'}`}
+            >
+              📜 세피아
+            </button>
+            <button
+              onClick={() => handleThemeChange('dark')}
+              className={`px-2.5 py-1 rounded transition ${theme === 'dark' ? 'bg-gray-700 text-white shadow-sm font-bold' : 'opacity-60'}`}
+            >
+              🌙 다크
+            </button>
+          </div>
 
-          {/* 패널 본문 (열려 있을 때만 노출) */}
-          {isPanelOpen && (
-            <div className={`w-[360px] lg:w-[420px] h-full min-h-0 p-6 overflow-y-auto space-y-8 transition-all shrink-0 ${panelThemeMap[theme]}`}>
-              <div className="border-b pb-4 border-black/10 dark:border-white/10 space-y-2">
-                <div className="flex items-center gap-2 text-xs font-semibold text-blue-600">
-                  <span className="px-2 py-0.5 bg-blue-50 dark:bg-blue-950/50 rounded">{question.exam_type}</span>
-                  <span className="px-2 py-0.5 bg-black/5 rounded">{question.year}학년도</span>
-                  <span className="px-2 py-0.5 bg-black/5 rounded">
-                    {question.category} / {question.sub_category}
-                  </span>
-                </div>
+          {/* 사용자 로그인/프로필 상태 */}
+          {currentUserProfile ? (
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold px-2.5 py-1 bg-black/5 dark:bg-white/10 rounded-lg">
+                👤 {currentUserProfile.username}님
+                {isRealAdmin && <span className="text-amber-600 font-extrabold ml-1">(👑 admin)</span>}
+              </span>
 
-                <h2 className="text-xl font-bold leading-snug pt-1">{question.title}</h2>
-              </div>
-
-              <RatingSection
-                avgRating={avgRating}
-                ratingCount={ratingCount}
-                userRating={userRating}
-                hasRated={hasRated}
-                onRate={handleRate}
-              />
-
-              <TagSection
-                officialTags={officialTags}
-                reviews={reviews}
-                votedReviewIds={votedReviewIds}
-                onVoteReview={handleVoteReview}
-                onAddReview={handleAddReview}
-              />
-
-              {/* 연계 독해 지문 추천 모듈 */}
-              {relatedQuestions.length > 0 && (
-                <div className="border-t pt-5 border-black/10 dark:border-white/10 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">
-                      🔗 동일 독해 메커니즘 연계 지문
-                    </h3>
-                    <span className="text-[10px] font-bold text-blue-600 bg-blue-50 dark:bg-blue-950 px-2 py-0.5 rounded">
-                      3차 능력 연계
-                    </span>
-                  </div>
-
-                  <div className="space-y-2.5">
-                    {relatedQuestions.map((rq) => (
-                      <Link
-                        key={rq.id}
-                        href={`/passages/${rq.id}`}
-                        className="block p-3 rounded-xl border border-black/10 dark:border-white/10 bg-black/5 hover:border-blue-500 transition group"
-                      >
-                        <div className="flex items-center gap-2 text-[10px] font-bold text-blue-600 mb-1">
-                          <span>{rq.exam_type}</span>
-                          <span>·</span>
-                          <span>{rq.year}학년도</span>
-                          <span>·</span>
-                          <span>{rq.sub_category}</span>
-                        </div>
-                        <div className="text-xs font-bold text-gray-900 dark:text-gray-100 group-hover:text-blue-600 transition line-clamp-1 mb-2">
-                          {rq.title}
-                        </div>
-
-                        {rq.shared_tags.length > 0 && (
-                          <div className="flex flex-wrap gap-1">
-                            {rq.shared_tags.map((tagName, idx) => (
-                              <span
-                                key={idx}
-                                className="px-2 py-0.5 bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200 text-[10px] font-bold rounded-md"
-                              >
-                                #{tagName}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </Link>
-                    ))}
-                  </div>
-                </div>
+              {isRealAdmin && (
+                <Link
+                  href="/admin"
+                  className="px-3 py-1.5 bg-gray-900 text-white text-xs font-bold rounded-lg hover:bg-gray-700 transition"
+                >
+                  ⚙️ 관리자
+                </Link>
               )}
 
-              {question.passage_text && (
-                <div className="border-t pt-4 border-black/10 dark:border-white/10">
-                  <h3 className="text-sm font-bold mb-2">지문 요약 및 메모</h3>
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap bg-black/5 p-3 rounded-lg border border-black/5">
-                    {question.passage_text}
-                  </p>
-                </div>
-              )}
+              <button
+                onClick={handleSignOut}
+                className="px-3 py-1.5 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs rounded-lg transition"
+              >
+                로그아웃
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setIsAuthModalOpen(true)}
+              className="px-3.5 py-1.5 bg-black text-white text-xs font-bold rounded-lg hover:bg-gray-800 transition"
+            >
+              🔑 로그인 / 회원가입
+            </button>
+          )}
+        </div>
+      </header>
+
+      {/* 메인 콘텐츠 메인 뷰어 & 서랍형 분석 패널 */}
+      <div className="flex-1 flex relative overflow-hidden h-[calc(100vh-57px)]">
+        {/* PDF 원본 지문 뷰어 */}
+        <div className="flex-1 h-full bg-gray-200 dark:bg-gray-900 relative">
+          {question.pdf_url ? (
+            <iframe
+              src={`${question.pdf_url}#toolbar=0&navpanes=0`}
+              className="w-full h-full border-none"
+              title={question.title}
+            />
+          ) : (
+            <div className="h-full flex items-center justify-center text-sm font-bold text-gray-500">
+              등록된 PDF 지문 파일이 없습니다.
             </div>
           )}
         </div>
+
+        {/* 우측 서랍형 분석 패널 토글 버튼 */}
+        <button
+          onClick={() => setIsPanelOpen(!isPanelOpen)}
+          className={`absolute right-0 top-1/2 -translate-y-1/2 z-30 px-2 py-4 bg-gray-900 text-white text-xs font-bold rounded-l-xl shadow-2xl transition-all duration-300 hover:bg-black ${
+            isPanelOpen ? 'mr-[380px]' : 'mr-0'
+          }`}
+          title={isPanelOpen ? '분석 패널 접기' : '분석 패널 펼치기'}
+        >
+          {isPanelOpen ? '▶' : '◀ 분석 패널'}
+        </button>
+
+        {/* 우측 분석 패널 */}
+        <div
+          className={`w-[380px] h-full overflow-y-auto p-6 space-y-6 shadow-xl transition-all duration-300 z-20 ${
+            panelBgMap[theme]
+          } ${isPanelOpen ? 'translate-x-0' : 'translate-x-full absolute right-0'}`}
+        >
+          {/* 패널 타이틀 & PDF 다운로드 */}
+          <div className="border-b border-black/10 dark:border-white/10 pb-4 space-y-3">
+            <div className="flex justify-between items-center">
+              <h3 className="text-sm font-black tracking-tight">📊 지문 분석 & 한줄평 피드</h3>
+              {question.pdf_url && (
+                <a
+                  href={question.pdf_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  download
+                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition"
+                >
+                  📥 PDF 다운로드
+                </a>
+              )}
+            </div>
+            <p className="text-xs opacity-70">
+              2차 표면 주제: <b>{question.sub_category || '미지정'}</b>
+            </p>
+          </div>
+
+          {/* 3차 공식 독해 능력 배지 */}
+          <div className="space-y-2">
+            <h4 className="text-xs font-bold opacity-80">🧠 3차 공식 독해 능력 (불변 핵심 태그)</h4>
+            <div className="flex flex-wrap gap-1.5">
+              {officialSkills.length === 0 ? (
+                <span className="text-xs text-gray-400">등록된 3차 독해 능력이 없습니다.</span>
+              ) : (
+                officialSkills.map((s) => (
+                  <span
+                    key={s.id}
+                    className="px-2.5 py-1 bg-blue-50 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300 border border-blue-200 dark:border-blue-800 text-xs font-bold rounded-lg"
+                  >
+                    #{s.name}
+                  </span>
+                ))
+              )}
+            </div>
+          </div>
+
+          {/* ⭐ 별점 평가 섹션 (로그인 시에만 작동) */}
+          <div className={`p-4 rounded-xl border space-y-3 ${boxBgMap[theme]}`}>
+            <div className="flex justify-between items-center">
+              <span className="text-xs font-bold">⭐ 지문 체감 난이도 평가</span>
+              <span className="text-xs font-black text-amber-500">
+                ★ {avgRating > 0 ? avgRating : '-'} <span className="text-gray-400 font-normal">({ratingCount}명)</span>
+              </span>
+            </div>
+
+            <div className="flex justify-center gap-2 pt-1">
+              {[1, 2, 3, 4, 5].map((star) => (
+                <button
+                  key={star}
+                  onClick={() => handleRatingSubmit(star)}
+                  className={`text-xl transition-transform hover:scale-125 ${
+                    star <= myRating ? 'text-amber-500' : 'text-gray-300 dark:text-gray-600'
+                  }`}
+                  title={`${star}점 부여`}
+                >
+                  ★
+                </button>
+              ))}
+            </div>
+            {!currentUserProfile && (
+              <p className="text-[11px] text-center text-gray-400">💡 별점 등록은 로그인 후 가능합니다.</p>
+            )}
+          </div>
+
+          {/* 🔗 3차 태그 연계 추천 지문 모듈 */}
+          <div className="space-y-3">
+            <h4 className="text-xs font-bold opacity-80">🔗 동일 독해 능력 연계 추천 지문</h4>
+            {linkedQuestions.length === 0 ? (
+              <p className="text-xs text-gray-400 italic">공유하는 독해 능력 연계 지문이 없습니다.</p>
+            ) : (
+              <div className="space-y-2">
+                {linkedQuestions.map((lq) => (
+                  <Link
+                    key={lq.id}
+                    href={`/passages/${lq.id}`}
+                    className={`block p-3 rounded-xl border transition hover:border-blue-500 ${boxBgMap[theme]}`}
+                  >
+                    <div className="flex justify-between items-start text-xs font-bold">
+                      <span className="line-clamp-1">{lq.title}</span>
+                      <span className="text-[10px] text-blue-600 shrink-0 ml-2">
+                        {lq.year} {lq.exam_type}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {lq.shared_skills.map((skillName, idx) => (
+                        <span
+                          key={idx}
+                          className="text-[10px] px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/60 text-blue-800 dark:text-blue-200 font-medium rounded"
+                        >
+                          #{skillName}
+                        </span>
+                      ))}
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* 💬 4차 유저 한줄평 & 칭호 인증 피드 */}
+          <div className="space-y-4 pt-2 border-t border-black/10 dark:border-white/10">
+            <h4 className="text-xs font-bold opacity-80">💬 유저 체감 한줄평 & 공감 피드 ({reviews.length})</h4>
+
+            {/* 한줄평 작성 폼 */}
+            <form onSubmit={handleReviewSubmit} className="space-y-2">
+              <select
+                value={newUserTitle}
+                onChange={(e) => setNewUserTitle(e.target.value)}
+                className={`w-full p-2 border rounded-lg text-xs font-bold ${boxBgMap[theme]}`}
+              >
+                <option value="칭호: 불꽃 독해자">🔥 칭호: 불꽃 독해자</option>
+                <option value="칭호: 평가원 출제위원급">👓 칭호: 평가원 출제위원급</option>
+                <option value="칭호: 구조독해 마스터">📐 칭호: 구조독해 마스터</option>
+                <option value="칭호: 리트 피지컬">⚡ 칭호: 리트 피지컬</option>
+              </select>
+
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  placeholder={
+                    currentUserProfile
+                      ? '지문에 대한 한줄평을 남겨주세요...'
+                      : '로그인 후 한줄평 작성이 가능합니다.'
+                  }
+                  value={newReviewContent}
+                  onChange={(e) => setNewReviewContent(e.target.value)}
+                  onClick={() => {
+                    if (!currentUserProfile) requireAuth();
+                  }}
+                  className={`flex-1 p-2 border rounded-lg text-xs ${boxBgMap[theme]}`}
+                />
+                <button
+                  type="submit"
+                  className="px-3 py-2 bg-black dark:bg-white dark:text-black text-white text-xs font-bold rounded-lg hover:opacity-80 transition"
+                >
+                  등록
+                </button>
+              </div>
+            </form>
+
+            {/* 한줄평 목록 */}
+            <div className="space-y-2.5 max-h-60 overflow-y-auto pr-1">
+              {reviews.length === 0 ? (
+                <p className="text-xs text-gray-400 py-2">가장 먼저 한줄평을 작성해 보세요!</p>
+              ) : (
+                reviews.map((rev) => (
+                  <div key={rev.id} className={`p-3 rounded-xl border text-xs space-y-1.5 ${boxBgMap[theme]}`}>
+                    <div className="flex justify-between items-center">
+                      <span className="font-extrabold text-blue-600 text-[11px]">{rev.user_title}</span>
+                      <div className="flex gap-2 text-[11px]">
+                        <button
+                          onClick={() => handleReviewReaction(rev.id, 'like')}
+                          className="hover:text-blue-600 font-bold"
+                        >
+                          👍 {rev.likes_count}
+                        </button>
+                        <button
+                          onClick={() => handleReviewReaction(rev.id, 'dislike')}
+                          className="hover:text-red-600 font-bold opacity-60"
+                        >
+                          👎 {rev.dislikes_count}
+                        </button>
+                      </div>
+                    </div>
+                    <p className="font-medium leading-relaxed">{rev.content}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
       </div>
 
-      <AdminTagEditModal
-        questionId={passageId}
-        initialData={{
-          year: question.year,
-          exam_type: question.exam_type,
-          category: question.category,
-          sub_category: question.sub_category,
-        }}
-        attachedSkillIds={attachedSkillIds}
-        isOpen={isAdminModalOpen}
-        onClose={() => setIsAdminModalOpen(false)}
-        onSuccess={() => fetchQuestionData()}
+      {/* 로그인/회원가입 모달 */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        onSuccess={fetchAuthAndData}
       />
     </div>
-  );
-}
-
-export default function PassageDetailPage() {
-  return (
-    <Suspense fallback={<div className="p-8 text-center text-gray-500">데이터를 불러오는 중...</div>}>
-      <PassageContent />
-    </Suspense>
   );
 }
